@@ -1,0 +1,40 @@
+# initiate change
+---
+-
+  hosts: localhost
+  name: "initiate change with Ansible"
+  tasks:
+    -
+      name: "perform a change with Ansible task(s)"
+      uri:
+        url: "replace this module with the module of your choice to perform the change"
+    -
+      name: "send Dynatrace custom configuration event with business context information"
+      uri:
+        url: "{{ dt_api_url }}/v1/events"
+        method: POST
+        headers:
+          content-type: application/json
+          Authorization: "Api-Token {{ dt_api_token }}"
+        body:
+          eventType: CUSTOM_CONFIGURATION
+          attachRules:
+            tagRule:
+            - meTypes:
+              - SERVICE
+              - PROCESS_GROUP_INSTANCE
+              - HOST
+              tags:
+              - context: CONTEXTLESS
+                key: "{{ configuration_tag_key }}"
+                value: "{{ configuration_tag_value }}"
+          source: Ansible Controller
+          description: "{{ configuration_details }}"
+          configuration: "{{ configuration_type }}"
+          customProperties:
+            Change Ticket: "{{ configuration_change_ticket }}"
+            Change New: "{{ configuration_new }}"
+            Change Old: "{{ configuration_old }}"
+            Remediation: "{{ configuration_remediation }}"
+        body_format: json
+        status_code: 200
