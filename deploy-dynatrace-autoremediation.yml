@@ -1,0 +1,433 @@
+# ansible playbook to deploy the dt-aap-autoremediation set up
+
+# #variables#
+# hosts_group: "" # host name or inventory group for the ansible controller
+# ansible_controller_api_host: "" # host name or ip address for the ansible controller providing the REST API
+# ansible_controller_api_user: "" # ansible controller user name with permissions to create ansible objects via REST API
+# ansible_controller_api_password: "" # ansible controller user password
+# ansible_controller_organization: 1 # ansible controller organization integer id this job template is part of
+# ansible_controller_project: 1 # ansible controller project integer id this job template is part of
+# ansible_controller_playbook: "dt-ansible-autoremediation-playbook.yml" # ansible playbook yml to deploy
+# credentials_ansible_username: "dt-aap-autoremediation-user" # ansible controller user created to execute the autoremediation job template
+# credentials_ansible_password: "changeme" # ansible controller user password, should be changed manually after testing
+# credentials_dynatrace_url: "https://abc123.live.dynatrace.com/api" # dynatrace base api url
+# credentials_dynatrace_token: "dt0c01.XYZ" # dynatrace api token with sufficient permissions
+---
+-
+  hosts: "{{ hosts_group }}"
+  name: "deploy dynatrace autoremediation"
+  tasks:
+    - name: "users (block)"
+      block:
+        - name: "GET users dynatrace user"
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/users/?search={{ credentials_ansible_username }}"
+            method: GET
+            headers:
+              content-type: application/json
+            status_code: 200
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_user_search
+        - name: "set fact - existing dynatrace user - name and id"
+          when: response_user_search is defined and response_user_search.json.count == 1
+          set_fact:
+            users_dynatrace_id: "{{ response_user_search.json.results.0.id }}"
+            users_dynatrace_name: "{{ response_user_search.json.results.0.username }}"
+        - name: "POST users dynatrace user"
+          when: response_user_search is defined and response_user_search.json.count != 1
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/users/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              username: "{{ credentials_ansible_username }}"
+              first_name: dynatrace
+              last_name: user
+              password: "{{ credentials_ansible_password }}"
+              is_superuser: false
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_user_dynatrace
+        - name: "set fact - new dynatrace user - name and id"
+          when: response_user_dynatrace is defined and response_user_dynatrace.json.id is defined
+          set_fact:
+            users_dynatrace_id: "{{ response_user_dynatrace.json.id }}"
+            users_dynatrace_name: "{{ response_user_dynatrace.json.username }}"
+    - name: "credential type (block)"
+      block:
+        - name: "GET credential_types dynatrace ansible controller user"
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credential_types/?search=dt-aap-autoremediation-ansible-user"
+            method: GET
+            headers:
+              content-type: application/json
+            status_code: 200
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credential_type_search_ansible
+        - name: "set fact - existing credential_type dynatrace ansible controller user - name and id"
+          when: response_credential_type_search_ansible is defined and response_credential_type_search_ansible.json.count == 1
+          set_fact:
+            credential_type_ansible_id: "{{ response_credential_type_search_ansible.json.results.0.id }}"
+            credential_type_ansible_name: "{{ response_credential_type_search_ansible.json.results.0.name }}"
+        - name: "POST credential_types dynatrace ansible controller user"
+          when: response_credential_type_search_ansible is defined and response_credential_type_search_ansible.json.count != 1
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credential_types/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              name: dt-aap-autoremediation-ansible-user
+              description: used to execute ansible jobs via the REST API
+              kind: cloud
+              inputs:
+                fields:
+                - id: username
+                  type: string
+                  label: Username
+                - id: password
+                  type: string
+                  label: Password
+                  secret: true
+                required:
+                - username
+                - password
+              injectors:
+                extra_vars:
+                  ansible_controller_user: "{{ '{{' }} username {{ '}}' }}"
+                  ansible_controller_password: "{{ '{{' }} password {{ '}}' }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credential_type_ansible
+        - name: "set fact - new credential_type dynatrace ansible controller user - name and id"
+          when: response_credential_type_ansible is defined and response_credential_type_ansible.json.id is defined
+          set_fact:
+            credential_type_ansible_id: "{{ response_credential_type_ansible.json.id }}"
+            credential_type_ansible_name: "{{ response_credential_type_ansible.json.name }}"
+        - name: "GET credential_types dynatrace environment api token"
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credential_types/?search=dt-aap-autoremediation-dynatrace-api-token"
+            method: GET
+            headers:
+              content-type: application/json
+            status_code: 200
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credential_type_search_dynatrace
+        - name: "set fact - existing credential_type dynatrace environment api token - name and id"
+          when: response_credential_type_search_dynatrace is defined and response_credential_type_search_dynatrace.json.count == 1
+          set_fact:
+            credential_type_dynatrace_id: "{{ response_credential_type_search_dynatrace.json.results.0.id }}"
+            credential_type_dynatrace_name: "{{ response_credential_type_search_ansible.json.results.0.name }}"
+        - name: "POST credential_types dynatrace environment api token"
+          when: response_credential_type_search_dynatrace is defined and response_credential_type_search_dynatrace.json.count != 1
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credential_types/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              name: dt-aap-autoremediation-dynatrace-api-token
+              description: used to interact with the dynatrace api
+              kind: cloud
+              inputs:
+                fields:
+                - id: url
+                  type: string
+                  label: Base API URL
+                - id: token
+                  type: string
+                  label: Api-Token
+                  secret: true
+                required:
+                - url
+                - token
+              injectors:
+                extra_vars:
+                  dt_api_url: "{{ '{{' }} url {{ '}}' }}"
+                  dt_api_token: "{{ '{{' }} token {{ '}}' }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credential_type_dynatrace
+        - name: "set fact - new credential_type dynatrace environment api token - name and id"
+          when: response_credential_type_dynatrace is defined and response_credential_type_dynatrace.json.id is defined
+          set_fact:
+            credential_type_dynatrace_id: "{{ response_credential_type_dynatrace.json.id }}"
+            credential_type_dynatrace_name: "{{ response_credential_type_dynatrace.json.name }}"
+    - name: "credentials (block)"
+      block:
+        - name: "GET credentials dynatrace ansible controller user"
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credentials/?search={{ credentials_ansible_username }}"
+            method: GET
+            headers:
+              content-type: application/json
+            status_code: 200
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credentials_search_ansible
+        - name: "set fact - existing credential dynatrace ansible controller user - name and id"
+          when: response_credentials_search_ansible is defined and response_credentials_search_ansible.json.count == 1
+          set_fact:
+            credential_ansible_id: "{{ response_credentials_search_ansible.json.results.0.id }}"
+            credential_ansible_name: "{{ response_credentials_search_ansible.json.results.0.name }}"
+        - name: "POST credentials dynatrace ansible controller user"
+          when: response_credentials_search_ansible is defined and response_credentials_search_ansible.json.count != 1
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credentials/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              name: "{{ credentials_ansible_username }}"
+              description: dynatrace ansible controller user
+              organization: "{{ ansible_controller_organization }}"
+              credential_type: "{{ credential_type_ansible_id|int }}"
+              inputs:
+                password: "{{ credentials_ansible_password }}"
+                username: "{{ credentials_ansible_username }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credentials_ansible
+        - name: "set fact - new credential dynatrace ansible controller - name and id"
+          when: response_credentials_ansible is defined and response_credentials_ansible.json.id is defined
+          set_fact:
+            credential_ansible_id: "{{ response_credentials_ansible.json.id }}"
+            credential_ansible_name: "{{ response_credentials_ansible.json.name }}"
+        - name: "GET credentials dynatrace environment api token"
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credentials/?search=dt-aap-autoremediation-dynatrace-api-token"
+            method: GET
+            headers:
+              content-type: application/json
+            status_code: 200
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credentials_search_dynatrace
+        - name: "set fact - existing credential dynatrace environment api token - name and id"
+          when: response_credentials_search_dynatrace is defined and response_credentials_search_dynatrace.json.count == 1
+          set_fact:
+            credential_dynatrace_id: "{{ response_credentials_search_dynatrace.json.results.0.id }}"
+            credential_dynatrace_name: "{{ response_credentials_search_dynatrace.json.results.0.name }}"
+        - name: "POST credentials dynatrace environment api token"
+          when: response_credentials_search_dynatrace is defined and response_credentials_search_dynatrace.json.count != 1
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/credentials/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              name: dt-aap-autoremediation-dynatrace-api-token
+              description: used to interact with the dynatrace api
+              organization: "{{ ansible_controller_organization }}"
+              credential_type: "{{ credential_type_dynatrace_id|int }}"
+              inputs:
+                url: "{{ credentials_dynatrace_url }}"
+                token: "{{ credentials_dynatrace_token }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_credentials_dynatrace
+        - name: "set fact - new credential dynatrace ansible controller - name and id"
+          when: response_credentials_dynatrace is defined and response_credentials_dynatrace.json.id is defined
+          set_fact:
+            credential_dynatrace_id: "{{ response_credentials_dynatrace.json.id }}"
+            credential_dynatrace_name: "{{ response_credentials_dynatrace.json.name }}"
+    - name: "job template (block)"
+      block:
+        - name: "GET job_templates dynatrace ansible autoremediation"
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/job_templates/?search=dynatrace-ansible-autoremediation"
+            method: GET
+            headers:
+              content-type: application/json
+            status_code: 200
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_job_template_search_autoremediation
+        - name: "set fact - existing job_template dynatrace ansible autoremediation"
+          when: response_job_template_search_autoremediation is defined and response_job_template_search_autoremediation.json.count == 1
+          set_fact:
+            job_template_autoremediation_id: "{{ response_job_template_search_autoremediation.json.results.0.id }}"
+            job_template_autoremediation_name: "{{ response_job_template_search_autoremediation.json.results.0.name }}"
+        - name: "POST job_templates dynatrace ansible autoremediation"
+          when: response_job_template_search_autoremediation is defined and response_job_template_search_autoremediation.json.count != 1
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/job_templates/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              type: job_template
+              name: dynatrace-ansible-autoremediation
+              description: dynatrace problem notification receiver for ansible autoremediation
+              job_type: run
+              playbook: "{{ ansible_controller_playbook }}"
+              extra_vars: "---\ntarget_hosts: \"ansible-controller\" # hosts to run this playbook/job on, should only match one host, preferably the ansible host\ndynatrace_offset: 10 # number of minutes before problem detected to check for root cause events (default/recommended: 10)\nansible_controller_host: \"ansible-controller.domain\" # host name of ansible controller providing the REST API\nmetrics: false # set to true if oneagent is installed on the target host and you want custom metrics generated (default/recommended: false)"
+              ask_variables_on_launch: true
+              ask_inventory_on_launch: true
+              allow_simultaneous: true
+              organization: "{{ ansible_controller_organization }}"
+              project: "{{ ansible_controller_project }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_job_template_autoremediation
+        - name: "set fact - new job_template dynatrace ansible autoremediation"
+          when: response_job_template_autoremediation is defined and response_job_template_autoremediation.json.id is defined
+          set_fact:
+            job_template_autoremediation_id: "{{ response_job_template_autoremediation.json.id }}"
+            job_template_autoremediation_name: "{{ response_job_template_autoremediation.json.name }}"
+        - name: "POST credentials dynatrace ansible controller user"
+          when: integer_working is defined
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/job_templates/{{ job_template_autoremediation_id }}/credentials/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              id: "{{ credential_ansible_id|int }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_job_template_credential_ansible
+        - name: "POST credentials dynatrace environment api token"
+          when: integer_working is defined
+          uri:
+            url: "https://{{ ansible_controller_api_host }}/api/v2/job_templates/{{ job_template_autoremediation_id }}/credentials/"
+            method: POST
+            headers:
+              content-type: application/json
+            body:
+              id: "{{ credential_dynatrace_id|int }}"
+            body_format: json
+            status_code: 201
+            user: "{{ ansible_controller_api_user }}"
+            password: "{{ ansible_controller_api_password }}"
+            force_basic_auth: yes
+            validate_certs: no
+          register: response_job_template_credential_dynatrace
+    - name: "dynatrace configuration (block)"
+      block:
+        - name: "GET dynatrace configuration - alerting profile"
+          uri:
+            url: "{{ credentials_dynatrace_url }}/config/v1/alertingProfiles/5f2c9196-ff18-4856-b077-13b3c9649136"
+            method: GET
+            headers:
+              content-type: application/json
+              Authorization: "Api-Token {{ credentials_dynatrace_token }}"
+            status_code: [200, 404]
+          register: response_dynatrace_search_alerting_profile
+        - name: "PUT dynatrace configuration - alerting profile"
+          when: response_dynatrace_search_alerting_profile is defined and response_dynatrace_search_alerting_profile.status == 404
+          uri:
+            url: "{{ credentials_dynatrace_url }}/config/v1/alertingProfiles/5f2c9196-ff18-4856-b077-13b3c9649136"
+            method: PUT
+            headers:
+              content-type: application/json
+              Authorization: "Api-Token {{ credentials_dynatrace_token }}"
+            body:
+              id: 5f2c9196-ff18-4856-b077-13b3c9649136
+              displayName: dt-aap-autoremediation
+              rules:
+              - severityLevel: ERROR
+                tagFilter:
+                  includeMode: NONE
+                  tagFilters: []
+                delayInMinutes: 10
+              - severityLevel: PERFORMANCE
+                tagFilter:
+                  includeMode: NONE
+                  tagFilters: []
+                delayInMinutes: 10
+              - severityLevel: CUSTOM_ALERT
+                tagFilter:
+                  includeMode: NONE
+                  tagFilters: []
+                delayInMinutes: 10
+              - severityLevel: RESOURCE_CONTENTION
+                tagFilter:
+                  includeMode: NONE
+                  tagFilters: []
+                delayInMinutes: 10
+              - severityLevel: AVAILABILITY
+                tagFilter:
+                  includeMode: NONE
+                  tagFilters: []
+                delayInMinutes: 10
+              eventTypeFilters: []
+            body_format: json
+            status_code: 201
+          register: response_dynatrace_alerting_profile
+        - name: "GET dynatrace configuration - problem notification"
+          uri:
+            url: "{{ credentials_dynatrace_url }}/config/v1/notifications/a437e39d-933a-4793-bfda-5ebf630f7087"
+            method: GET
+            headers:
+              content-type: application/json
+              Authorization: "Api-Token {{ credentials_dynatrace_token }}"
+            status_code: [200, 404]
+          register: response_dynatrace_search_problem_notification
+        - name: "PUT dynatrace configuration - problem notification"
+          when: response_dynatrace_search_problem_notification is defined and response_dynatrace_search_problem_notification.status == 404
+          uri:
+            url: "{{ credentials_dynatrace_url }}/config/v1/notifications/a437e39d-933a-4793-bfda-5ebf630f7087"
+            method: PUT
+            headers:
+              content-type: application/json
+              Authorization: "Api-Token {{ credentials_dynatrace_token }}"
+            body:
+              type: ANSIBLETOWER
+              id: a437e39d-933a-4793-bfda-5ebf630f7087
+              name: dt-aap-autoremediation
+              alertingProfile: 5f2c9196-ff18-4856-b077-13b3c9649136
+              active: true
+              jobTemplateURL: "https://{{ ansible_controller_api_host }}/#/templates/job_template/{{ job_template_autoremediation_id }}"
+              acceptAnyCertificate: true
+              username: "{{ credentials_ansible_username }}"
+              password: "{{ credentials_ansible_password }}"
+              customMessage: ""
+              jobTemplateID: "{{ job_template_autoremediation_id }}"
+            body_format: json
+            status_code: 201
+          register: response_dynatrace_problem_notification

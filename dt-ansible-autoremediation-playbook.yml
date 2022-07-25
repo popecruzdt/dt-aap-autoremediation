@@ -1,0 +1,254 @@
+# auto-remediation and self-healing with Ansible Automation Platform (Controller)
+# extra variables required
+# target_hosts: "ansible-controller" # hosts to run this playbook/job on, should only match one host, preferably the ansible host
+# dynatrace_offset: 10 # number of minutes before problem detected to check for root cause events (default/recommended: 10)
+# ansible_controller_host: "ansible-controller.domain" # host name of ansible controller providing the REST API
+# metrics: false # set to true if oneagent is installed on the target host and you want custom metrics generated (default/recommended: false)
+---
+-
+  hosts: "{{ target_hosts }}"
+  name: "ansible auto-remediation handler for dynatrace"
+  tasks:
+    # Problem State OPEN
+    - name: "problem state is OPEN"
+      block:
+        # Before auto-remedation
+        -
+          name: "update problem with comment before auto-remediation"
+          when: state == "OPEN"
+          uri:
+            url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}/comments?Api-Token={{ dt_api_token }}"
+            method: POST
+            body:
+              comment: Problem notification received by Ansible Controller.  Attempting to perform auto-remediation.
+              user: "Job {{ tower_job_id }}"
+              context: Ansible Controller
+            body_format: json
+            status_code: 200
+        -
+          name: "metrics - attempted remediations (ansible.remediations.attempted)"
+          uri:
+            url: http://localhost:14499/metrics/ingest
+            method: POST
+            headers:
+              content-type: "text/plain; charset=utf-8"
+            body: "ansible.{{ metrics_group }}.remediations.attempted,id=\"{{ tower_job_id }}\",template=\"{{ tower_job_template_name }}\",type=\"{{ tower_job_launch_type }}\" 1"
+            status_code: 202
+          ignore_errors: yes
+          when: metrics is defined and metrics == True and metrics_group is defined
+        # Determine the remediation action if one exists
+        # Determine root cause if it exists
+        -
+          name: "retrieve problem details from dynatrace api"
+          when: state == "OPEN"
+          uri:
+            url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}?Api-Token={{ dt_api_token }}"
+            status_code: 200
+          register: dynatrace_problem_details_response
+        -
+          name: "determine if there is a root cause identified"
+          when: state == "OPEN"
+          set_fact:
+            dynatrace_rootcause_detected: "{{ dynatrace_problem_details_response.json.result.hasRootCause | bool }}"
+        -
+          name: "identify the root cause entity"
+          when: state == "OPEN" and dynatrace_rootcause_detected == True and item.isRootCause == True and dynatrace_offset is defined
+          set_fact:
+            dynatrace_rootcause_entity: "{{ item.entityId }}"
+            dynatrace_rootcause_status: "{{ item.status }}"
+            dynatrace_rootcause_startTime: "{{ (item.startTime - (dynatrace_offset * 60000)) }}"
+          with_items: "{{ dynatrace_problem_details_response.json.result.rankedEvents }}"
+        -
+          name: "output the root cause identity"
+          debug:
+            var: dynatrace_rootcause_entity
+          when: dynatrace_rootcause_entity is defined
+        # Check for root cause remediation action from deployment events
+        - name: "check for root cause remediation from deployment events"
+          block:
+            -
+              name: "retrieve root cause entity events from dynatrace api"
+              when: state == "OPEN" and dynatrace_rootcause_detected and dynatrace_rootcause_entity is defined
+              uri:
+                url: "{{ dt_api_url }}/v1/events?from={{ dynatrace_rootcause_startTime }}&eventType=CUSTOM_DEPLOYMENT&entityId={{ dynatrace_rootcause_entity }}&Api-Token={{ dt_api_token }}"
+                status_code: 200
+              register: dynatrace_events_deployments_response
+            -
+              name: "determine if there are any deployment events"
+              when: state == "OPEN" and dynatrace_rootcause_detected and dynatrace_events_deployments_response is defined
+              set_fact:
+                dynatrace_events_deployments_detected: "{{ dynatrace_events_deployments_response.json.totalEventCount }}"
+            -
+              name: "retrieve event remediation action"
+              when: state == "OPEN" and dynatrace_rootcause_detected and dynatrace_events_deployments_detected != 0
+              set_fact:
+                dynatrace_remediation_action: "{{ item.remediationAction }}"
+                dynatrace_remediation_name: "{{ item.deploymentName }}"
+                dynatrace_remediation_type: "Deployment Event"
+              with_items: "{{ dynatrace_events_deployments_response.json.events }}"
+          when: dynatrace_rootcause_entity is defined and dynatrace_remediation_action is not defined
+        # Check for root cause remediation action from configuration events
+        - name: "check for root cause remediation action from configuration events"
+          block:
+            -
+              name: "retrieve root cause entity events from dynatrace api"
+              when: state == "OPEN" and dynatrace_rootcause_detected and dynatrace_rootcause_entity is defined and dynatrace_remediation_action is not defined
+              uri:
+                url: "{{ dt_api_url }}/v1/events?from={{ dynatrace_rootcause_startTime }}&eventType=CUSTOM_CONFIGURATION&entityId={{ dynatrace_rootcause_entity }}&Api-Token={{ dt_api_token }}"
+                status_code: 200
+              register: dynatrace_events_configurations_response
+            -
+              name: "determine if there are any configuration events"
+              when: state == "OPEN" and dynatrace_rootcause_detected and dynatrace_events_configurations_response is defined and dynatrace_remediation_action is not defined
+              set_fact:
+                dynatrace_events_configurations_detected: "{{ dynatrace_events_configurations_response.json.totalEventCount }}"
+            -
+              name: "retrieve event remediation action"
+              when: state == "OPEN" and dynatrace_rootcause_detected and dynatrace_events_configurations_detected != 0 and dynatrace_remediation_action is not defined
+              set_fact:
+                dynatrace_remediation_action: "{{ item.customProperties.Remediation }}"
+                dynatrace_remediation_name: "{{ item.annotationDescription }}"
+                dynatrace_remediation_type: "Configuration Change"
+              with_items: "{{ dynatrace_events_configurations_response.json.events }}"
+          when: dynatrace_rootcause_entity is defined and dynatrace_remediation_action is not defined
+        - name: "trigger auto-remediation action tasks"
+          block:
+            -
+              name: "output the remediation action"
+              debug:
+                var: dynatrace_remediation_action
+              when: dynatrace_remediation_action is defined
+            # Update problem card with auto-remediation action
+            -
+              name: "update problem with comment after finding remediation action"
+              when: state == "OPEN" and dynatrace_remediation_name is defined
+              uri:
+                url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}/comments?Api-Token={{ dt_api_token }}"
+                method: POST
+                body:
+                  comment: "Determined '{{ dynatrace_remediation_type }}' problem remediation action for '{{ dynatrace_remediation_name }}'."
+                  user: "Job {{ tower_job_id }}"
+                  context: Ansible Controller
+                body_format: json
+                status_code: 200
+            # Trigger Ansible auto-remediation action
+            -
+              name: "call ansible remediation action url"
+              when: state == "OPEN" and '/launch/' in dynatrace_remediation_action
+              uri:
+                url: "https://{{ ansible_controller_host }}{{ dynatrace_remediation_action }}"
+                status_code: 201
+                user: "{{ ansible_controller_user }}"
+                password: "{{ ansible_controller_password }}"
+                method: POST
+                force_basic_auth: yes
+                validate_certs: no
+              register: ansible_remediation_response
+            -
+              name: "retrieve ansible job status"
+              when: ansible_remediation_response is defined
+              uri:
+                url: "https://{{ ansible_controller_host }}{{ ansible_remediation_response.json.url }}"
+                status_code: 200
+                user: "{{ ansible_controller_user }}"
+                password: "{{ ansible_controller_password }}"
+                method: GET
+                force_basic_auth: yes
+                validate_certs: no
+              register: ansible_remediation_job_response
+              until: ansible_remediation_job_response.json.status == 'successful' or ansible_remediation_job_response.json.status == 'failed'
+              retries: 5
+              delay: 60
+            -
+              name: "validate ansible job status is successful"
+              when: ansible_remediation_response is defined and ansible_remediation_job_response is defined and ansible_remediation_job_response.json.status == 'successful'
+              set_fact:
+                ansible_remediation_successful: True
+            # After auto-remediation is triggered
+            -
+              name: "update problem with comment after remediation"
+              when: state == "OPEN" and ansible_remediation_response.json.job is defined and ansible_remediation_successful == True
+              uri:
+                url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}/comments?Api-Token={{ dt_api_token }}"
+                method: POST
+                body:
+                  comment: "Successfully triggered auto-remediation.  See Ansible Controller Job: '{{ ansible_remediation_response.json.job }}'"
+                  user: "Job {{ tower_job_id }}"
+                  context: Ansible Controller
+                body_format: json
+                status_code: 200
+          when: dynatrace_remediation_action is defined
+        # When a remediation action is not found
+        - name: "no remediation action found"
+          block:
+            -
+              name: "update problem with comment indicating remediation not found"
+              when: state == "OPEN" and dynatrace_remediation_action is not defined
+              uri:
+                url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}/comments?Api-Token={{ dt_api_token }}"
+                method: POST
+                body:
+                  comment: "Unable to trigger auto-remediation.  A remediation action was not found for this problem!"
+                  user: "Job {{ tower_job_id }}"
+                  context: Ansible Controller
+                body_format: json
+                status_code: 200
+            -
+              name: "metrics - failed remediations (ansible.remediations.failed)"
+              uri:
+                url: http://localhost:14499/metrics/ingest
+                method: POST
+                headers:
+                  content-type: "text/plain; charset=utf-8"
+                body: "ansible.{{ metrics_group }}.remediations.failed,id=\"{{ tower_job_id }}\",template=\"{{ tower_job_template_name }}\",type=\"{{ tower_job_launch_type }}\" 1"
+                status_code: 202
+              ignore_errors: yes
+              when: metrics is defined and metrics == True and metrics_group is defined
+          when: dynatrace_remediation_action is not defined
+      when: state == "OPEN"
+    # Problem State RESOLVED
+    - name: "problem state is RESOLVED"
+      block:
+        -
+          name: "retrieve problem comments from dynatrace api"
+          when: state == "RESOLVED"
+          uri:
+            url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}/comments?Api-Token={{ dt_api_token }}"
+            status_code: 200
+          register: dynatrace_problem_comments_response
+        -
+          name: "determine if problem was auto-remediated by ansible controller"
+          when: state == "RESOLVED" and dynatrace_problem_comments_response is defined and 'Successfully triggered auto-remediation.' in item.content
+          set_fact:
+            dynatrace_remediation_triggered: true
+          with_items: "{{ dynatrace_problem_comments_response.json.comments }}"
+        -
+          name: "update problem with comment after resolved notification"
+          when: state == "RESOLVED" and dynatrace_remediation_triggered is defined and dynatrace_remediation_triggered == True
+          uri:
+            url: "{{ dt_api_url }}/v1/problem/details/{{ pid }}/comments?Api-Token={{ dt_api_token }}"
+            method: POST
+            body:
+              comment: Problem state changed to RESOLVED.  Ansible Automation Platform self-healing successful. *drops mic*
+              user: "Job {{ tower_job_id }}"
+              context: Ansible Controller
+            body_format: json
+            status_code: 200
+        -
+          name: "metrics - successful remediations (ansible.remediations.successful)"
+          uri:
+            url: http://localhost:14499/metrics/ingest
+            method: POST
+            headers:
+              content-type: "text/plain; charset=utf-8"
+            body: "ansible.{{ metrics_group }}.remediations.successful,id=\"{{ tower_job_id }}\",template=\"{{ tower_job_template_name }}\",type=\"{{ tower_job_launch_type }}\" 1"
+            status_code: 202
+          ignore_errors: yes
+          when: metrics is defined and metrics == True and metrics_group is defined
+        -
+          name: "retrieve remediation action details from problem comments"
+          when: state == "RESOLVED" and dynatrace_remediation_triggered == True and dynatrace_problem_comments_response is defined and dynatrace_remediation_triggered is defined and 'problem remediation action for' in item.content
+          set_fact:
+            dynatrace_remediation_comment: "{{ item.content }}"
+          with_items: "{{ dynatrace_problem_comments_response.json.comments }}"
+      when: state == "RESOLVED"
