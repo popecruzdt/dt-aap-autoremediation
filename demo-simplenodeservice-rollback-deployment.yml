@@ -6,17 +6,12 @@
   tasks:
     -
       name: "deploy - remove existing simplenodeservice container"
-      docker_container:
-        name: simplenodeservice
-        state: absent
+      shell: "docker kill simplenodeservice"
+      become: true
     -
       name: "deploy - run new simplenodeservice container"
-      docker_container:
-        name: simplenodeservice
-        image: grabnerandi/simplenodeservice:2.0.2
-        state: started
-        ports:
-         - "8080:8080"
+      shell: "docker run -d -p 8080:8080 --rm --name simplenodeservice grabnerandi/simplenodeservice:1.0.2"
+      become: true
     -
       name: "push Dynatrace custom deployment event"
       uri:
@@ -37,12 +32,12 @@
               - context: CONTEXTLESS
                 key: "{{ deployment_tag_key }}"
                 value: "{{ deployment_tag_value }}"
-          source: Ansible Tower
+          source: "Ansible Automation Platform"
           deploymentName: "SimpleNodeService"
-          deploymentVersion: "2.0.2"
+          deploymentVersion: "1.0.2"
           remediationAction: "{{ deployment_remediation }}"
           customProperties:
             Details: "SimpleNodeService Deploy New Version"
-            Version: "grabnerandi/simplenodeservice:2.0.2"
+            Version: "grabnerandi/simplenodeservice:1.0.2"
         body_format: json
         status_code: 200
