@@ -6,17 +6,12 @@
   tasks:
     -
       name: "deploy - remove existing simplenodeservice container"
-      community.general.docker_container:
-        name: simplenodeservice
-        state: absent
+      shell: "docker kill simplenodeservice"
+      become: true
     -
       name: "deploy - run new simplenodeservice container"
-      community.general.docker_container:
-        name: simplenodeservice
-        image: grabnerandi/simplenodeservice:2.0.2
-        state: started
-        ports:
-         - "8080:8080"
+      shell: "docker run -d -p 8080:8080 --rm --name simplenodeservice grabnerandi/simplenodeservice:2.0.2"
+      become: true
     -
       name: "push Dynatrace custom deployment event"
       uri:
