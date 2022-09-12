@@ -6,12 +6,12 @@
   tasks:
     -
       name: "deploy - remove existing simplenodeservice container"
-      docker_container:
+      community.general.docker_container:
         name: simplenodeservice
         state: absent
     -
       name: "deploy - run new simplenodeservice container"
-      docker_container:
+      community.general.docker_container:
         name: simplenodeservice
         image: grabnerandi/simplenodeservice:2.0.2
         state: started
