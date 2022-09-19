@@ -28,7 +28,7 @@
               - context: CONTEXTLESS
                 key: "{{ deployment_tag_key }}"
                 value: "{{ deployment_tag_value }}"
-          source: Ansible Tower
+          source: "Ansible Automation Platform"
           deploymentName: "{{ deployment_name }}"
           deploymentVersion: "{{ deployment_version}}"
           remediationAction: "{{ deployment_remediation }}"

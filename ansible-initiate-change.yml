@@ -28,7 +28,7 @@
               - context: CONTEXTLESS
                 key: "{{ configuration_tag_key }}"
                 value: "{{ configuration_tag_value }}"
-          source: Ansible Controller
+          source: "Ansible Automation Platform"
           description: "{{ configuration_details }}"
           configuration: "{{ configuration_type }}"
           customProperties:
